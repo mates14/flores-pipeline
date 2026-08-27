@@ -153,7 +153,7 @@ trace.py              trace finding, tilt correction, optimal extraction
 wavecal.py            bootstrapped wavelength calibration
 noise.py              per-pixel error estimation
 coadd_light.py         combine raw sub-exposures of one frame
-coadd_sets.py          drive coadd_light.py from a per-night `sets` manifest
+coadd_sets.py          drive coadd_light.py from a per-night sets/ directory
 fluxcal.py             flux calibration from spectrophotometric standards
 flux_calibrate.py      CLI driver for fluxcal.py
 common.py              small shared numerical utilities
