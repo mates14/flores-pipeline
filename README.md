@@ -66,38 +66,80 @@ the end), not something needed per science frame.
    possible with this dataset (no headers carry it) — every calibrated
    output's header says so explicitly.
 
+## Night-directory layout
+
+The night/run directory is the toplevel: every stage assumes it's the
+current directory and reads/writes a fixed subdirectory of it, so a night
+stays self-contained and its stages don't get lost track of:
+
+```
+20260823/
+├── raw/                raw acquired frames (science/dark/comp) - input only
+├── sets/                manifests - see below
+│   ├── list                 ordered list of target names to coadd
+│   ├── <name>               one per target, tab-separated frame list
+│   ├── comp                 comp-frame manifest (for header-untagged nights)
+│   ├── darks                dark-frame manifest (ditto)
+│   └── standards            which set is which flux standard - see below
+├── coadded/            coadd_sets.py output (optional stage)
+├── reduced/            reduce_flores.py output
+└── fluxcal/            flux_calibrate.py output
+```
+
+`sets/comp` and `sets/darks` play a different role from the rest of
+`sets/`: they identify calibration frames by an explicit filename list
+(for nights where `IMAGETYP` doesn't tag them correctly), not a target to
+combine. Everything else in `sets/` is a per-target frame list whose
+filename becomes the stem of that target's combined output
+(`sets/vega` → `coadded/vega_3x1s.fits` → `reduced/vega_3x1s_fiber-*.dat`).
+
 ## Usage
 
-Basic reduction of one night:
+`cd` into the night directory and run each stage with no arguments - every
+default is relative to the current directory per the layout above:
 
 ```
-python3 reduce_flores.py /path/to/raw_dir
+cd 20260823
+python3 /path/to/coadd_sets.py                       # sets/ + raw/ -> coadded/
+python3 /path/to/reduce_flores.py coadded --comp-dir raw   # -> reduced/
+python3 /path/to/reduce_flores.py raw                      # non-coadded targets, same reduced/
+python3 /path/to/flux_calibrate.py                    # reduced/ + coadded/ + sets/standards -> fluxcal/
 ```
 
-Output defaults to `~/flores/reduced/<basename of raw_dir>`; override with
-`--out`. Each `<science_stem>_fiber-<tag>.dat` file has three columns:
-wavelength (Å), flux, error.
+Every path is still overridable and independent of the others (`--out`,
+`--sets`, `--comp-dir`, `--coadd-dir`, `--standards`, ...) for nights that
+don't follow this layout, or a raw location that lives elsewhere (e.g.
+`/images/2026/20260823` on an imaging server) - see each script's `-h`.
 
-Nights where comp frames aren't tagged correctly in `IMAGETYP`:
-
-```
-python3 reduce_flores.py /path/to/raw_dir --comps comp1.fits comp2.fits
-# or, using a manifest file (one filename per line):
-python3 reduce_flores.py /path/to/raw_dir --comps comp
-```
-
-Coadding sub-exposures before reduction:
+Nights where comp frames aren't tagged correctly in `IMAGETYP` (same
+manifest convention for `--darks`):
 
 ```
-python3 coadd_sets.py /path/to/raw_dir --out /path/to/coadd_dir
-python3 reduce_flores.py /path/to/coadd_dir --comp-dir /path/to/raw_dir --comps comp
+python3 reduce_flores.py raw --comps comp1.fits comp2.fits
+# or, using sets/comp directly (this is also reduce_flores.py's default
+# when sets/comp exists and --comps isn't given):
+python3 reduce_flores.py raw --comps sets/comp
 ```
 
-Flux-calibrating a reduced night:
+## Flux standard pairing
+
+`flux_calibrate.py` needs to know which reduced target *is* a flux
+standard, and which known standard (from `fluxstd/`) it is. This is never
+guessed from the target name - it's declared in `sets/standards`, one line
+per standard: `<target_name> <standard_key>` (whitespace-separated, `#`
+comments/blank lines ignored), e.g.:
 
 ```
-python3 flux_calibrate.py /path/to/reduced_dir
+vega    vega
+hr7596  hr7596
 ```
+
+`<target_name>` is the leading token of the reduced `.dat` stem (e.g.
+`etauma` out of `etauma_6x5s_fiber-untilted.dat`); `<standard_key>` is one
+of the keys in `flux_calibrate.py`'s `STANDARDS` dict (`etauma`,
+`zetacas`, `vega`, `hr7596`). This file is required - a night observing a
+standard under a different name, or a new standard added to `STANDARDS`,
+just needs one line here, not a renamed set.
 
 Run any script with `-h` for the full set of options — each has a detailed
 module docstring covering the reasoning behind its defaults and edge cases.

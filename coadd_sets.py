@@ -1,41 +1,52 @@
 #!/usr/bin/env python3
 """
 Coadd each target's "long" sub-exposures ahead of extraction, driven by a
-per-night `sets` manifest (one line per target list file, e.g. `sscyg`,
-`vega`, ... - see e.g. ~/tmp/flores/20260823/sets).
+per-night sets/ directory (see reduce_flores.py's module docstring for the
+assumed night-directory layout - this script is the sets/+raw/ -> coadded/
+stage). Run from inside the night directory:
 
-    python3 coadd_sets.py <raw_dir> [--out <coadd_dir>] [--sets sets] [--only target1 target2 ...]
+    cd 20260823 && python3 /path/to/coadd_sets.py
 
-Each per-target list file (tab-separated: filename, exptime, imagetyp - the
-format your own list-building tool already writes) is grouped by exposure
-time. Frequently a target has more than one exposure length in its list
+which reads raw/*.fits, sets/list (one target-list filename per line, e.g.
+`sscyg`, `vega`, ...) and each listed sets/<name> file, and writes
+coadded/. All three are overridable and independent:
+
+    python3 coadd_sets.py <raw_dir> [--out <coadd_dir>] [--sets <sets/list>] [--only target1 target2 ...]
+
+Each per-target list file (sets/<name>, tab-separated: filename, exptime,
+imagetyp - the format your own list-building tool already writes) is
+grouped by exposure time. Frequently a target has more than one exposure
+length in its list
 (quick test shots, or an exploratory long one) - rather than take "short =
 testing" as an absolute rule, this picks the LONGEST group that has at
-least 2 members and coadds only that. Utility lists that aren't
-tab-separated per-frame target lists (e.g. a bare filename-per-line `comp`
-manifest) are skipped automatically, since they don't parse as one - so is
-anything not listed in `sets` at all (e.g. a master `img` index or a
-`darks` list, neither of which is a single-target science set).
+least 2 members and coadds only that. sets/comp and sets/darks (comp/dark
+manifests - see reduce_flores.py) live alongside the per-target lists but
+have a different, special role and aren't science sets themselves; they're
+skipped automatically here since they don't parse as a per-frame target
+list, as is anything else dropped into sets/ that isn't listed in
+sets/list at all (e.g. a master `img` index, not a single-target set).
 
 Why "longest group with >=2 members" rather than just "the long ones":
 plain "combine the longest exposures, drop the short ones" breaks on a set
 like fb179 (three 120s + a single 300s) - a single long exposure isn't
 something to usefully "coadd" alone, and it's the 120s group that has the
 real multi-frame S/N gain. Checked against every target list in this
-night's `sets`, this rule reproduces exactly what "ignore the short test
-shots, combine the long ones" means in every case, including the ones
-where that phrase alone is ambiguous (fb179; algol, which has both a 7x1s
-and a 4x20s group).
+night's sets/list, this rule reproduces exactly what "ignore the short
+test shots, combine the long ones" means in every case, including the
+ones where that phrase alone is ambiguous (fb179; algol, which has both a
+7x1s and a 4x20s group).
 
 Each target's chosen group is coadded via coadd_light.py's coadd()
 (dark-subtracted per sub-exposure, registered on trace position, summed -
 see its docstring) and written to <coadd_dir>/<target>_<n>x<exptime>s.fits,
 tagged DARKSUB=T exactly like coadd_light.py's own output, so it can be fed
 straight into reduce_flores.py like any other light frame - point
-reduce_flores.py's raw_dir at <coadd_dir> and --comps at the original
-night's comp files (absolute paths, since no comps/darks live in
-<coadd_dir> - reduce_flores.py doesn't need them there anyway, since the
-coadd is already dark-subtracted and DARKSUB=T-tagged).
+reduce_flores.py's raw_dir at <coadd_dir> and --comp-dir at raw/ (the
+coadded frames don't carry their own comps/darks - reduce_flores.py
+doesn't need them there anyway, since the coadd is already
+dark-subtracted and DARKSUB=T-tagged), e.g.:
+
+    python3 reduce_flores.py coadded --comp-dir raw
 """
 import argparse
 import glob
@@ -93,12 +104,15 @@ def pick_group(rows, min_members=2):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("raw_dir", help="directory of raw FITS frames (where the target "
-                                     "list files and `sets` also live, by default)")
-    ap.add_argument("--sets", default="sets", help="the sets manifest filename "
-                     "(relative to raw_dir unless absolute; default: 'sets')")
-    ap.add_argument("--out", default=None, help="output dir for coadds "
-                     "(default: <raw_dir>/coadded)")
+    ap.add_argument("raw_dir", nargs="?", default="raw",
+                     help="directory of raw FITS frames (default: ./raw)")
+    ap.add_argument("--sets", default="sets/list",
+                     help="path to the sets index file, listing one target-list "
+                          "filename per line (default: ./sets/list). Each listed "
+                          "name is resolved as a file in the same directory as "
+                          "this index (i.e. sets/<name>), not in raw_dir")
+    ap.add_argument("--out", default="coadded",
+                     help="output dir for coadds (default: ./coadded)")
     ap.add_argument("--only", nargs="+", default=None,
                      help="only process these target names (default: all in --sets)")
     ap.add_argument("--min-members", type=int, default=2,
@@ -116,8 +130,9 @@ def main():
     args = ap.parse_args()
 
     raw_dir = os.path.normpath(args.raw_dir)
-    sets_path = args.sets if os.path.isabs(args.sets) else os.path.join(raw_dir, args.sets)
-    out_dir = args.out or os.path.join(raw_dir, "coadded")
+    sets_path = os.path.normpath(args.sets)
+    sets_dir = os.path.dirname(sets_path) or "."
+    out_dir = os.path.normpath(args.out)
     os.makedirs(out_dir, exist_ok=True)
 
     with open(sets_path) as f:
@@ -131,7 +146,7 @@ def main():
     dark_frames = [f for f in dark_candidates if f.role == "dark"]
 
     for name in target_names:
-        list_path = os.path.join(raw_dir, name)
+        list_path = os.path.join(sets_dir, name)
         if not os.path.isfile(list_path):
             print(f"SKIP {name}: no such list file ({list_path})", file=sys.stderr)
             continue

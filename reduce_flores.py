@@ -1,17 +1,35 @@
 #!/usr/bin/env python3
 """
 FLORES reduction driver: raw frames in, (wavelength, flux, error) triplets
-out. No interactive steps. Meant to run unattended on a server against
-whatever night directory a given site uses (/images/year/night on the
-imaging server, /.../flores/ elsewhere, ...) - the raw location and the
-output location are independent and both explicit:
+out. No interactive steps.
 
+Run from inside a night directory - the pipeline's convention is that the
+night/run directory is the toplevel, and every stage's input/output lives
+in a fixed subdirectory of it, so `cd` there and just run:
+
+    cd /images/2026/20260823   # or ~/tmp/flores/20260823, wherever a given
+                                # site keeps a night - this dir IS the root
+    python3 /path/to/reduce_flores.py
+
+    20260823/
+    |-- raw/                 raw acquired frames (science/dark/comp) - input
+    |-- sets/                manifests (comp, darks, standards, per-target
+    |                        coadd lists) - see coadd_sets.py
+    |-- coadded/             coadd_sets.py output (optional stage)
+    |-- reduced/             <- this script's output
+    `-- fluxcal/             flux_calibrate.py output
+
+With no arguments this reads raw/ and writes reduced/. Both are still
+overridable and independent, e.g. to reduce an already-coadded set of
+frames (which don't carry their own comps/darks):
+
+    python3 reduce_flores.py coadded --comp-dir raw
     python3 reduce_flores.py <raw_dir> [--out <out_dir>] [--seed seeds/flores_seed_linelist.csv]
     python3 reduce_flores.py <raw_dir> --comps comp1.fits comp2.fits   # legacy/un-migrated nights
 
-If --out is omitted it defaults to ~/flores/reduced/<basename of raw_dir>
-(e.g. raw_dir=/images/2026/20260823 -> ~/flores/reduced/20260823),
-independent of whatever raw_dir's own layout looks like on a given server.
+--out always defaults to ./reduced regardless of raw_dir, since a night
+normally reduces both raw/ (direct shots) and coadded/ (combined sets) into
+the same reduced/ directory.
 
 One raw frame in, one output spectrum out - always. This driver does no
 co-adding/combining of its own: not every target is a single shot (some are
@@ -306,52 +324,77 @@ def reduce_science_fibers(science, comp_fibers, master_dark, max_row_match_px=10
     return results
 
 
-def _expand_comps_arg(comps_arg, raw_dir):
+def _expand_manifest_arg(entries, raw_dir):
     """
-    --comps accepts either explicit FITS filenames, or a single manifest
-    file listing one filename per line (blank lines and '#' comments
-    ignored) - the natural way to point at a night's existing `comp` file
-    rather than typing out every comp frame on the command line. A single
-    entry is treated as a manifest if it isn't itself a .fits/.fit file and
-    resolves to a readable file (checked relative to raw_dir first, then as
-    given).
-    """
-    if len(comps_arg) != 1 or comps_arg[0].lower().endswith((".fits", ".fit")):
-        return comps_arg
+    --comps/--darks accept either explicit FITS filenames, or a single
+    manifest file listing one filename per line (blank lines and '#'
+    comments ignored) - the natural way to point at a night's `sets/comp`
+    or `sets/darks` file rather than typing out every frame on the command
+    line. A single entry is treated as a manifest if it isn't itself a
+    .fits/.fit file and resolves to a readable file (checked relative to
+    raw_dir first, then as given - a manifest under sets/ is given as a
+    path like "sets/comp", not found under raw_dir, so falls through to
+    being read as given).
 
-    candidate = comps_arg[0]
+    Only the first tab-separated field of each line is used, so a manifest
+    can be either a bare filename-per-line list (sets/comp's format) or the
+    same tab-separated (filename, exptime, imagetyp) list-building tool
+    format the per-target set lists use (sets/darks is written that way in
+    practice) - both resolve to just the filenames.
+    """
+    if len(entries) != 1 or entries[0].lower().endswith((".fits", ".fit")):
+        return entries
+
+    candidate = entries[0]
     for path in (os.path.join(raw_dir, candidate), candidate):
         if os.path.isfile(path):
             with open(path) as f:
-                lines = [ln.strip() for ln in f]
+                lines = [ln.split("\t", 1)[0].strip() for ln in f]
             return [ln for ln in lines if ln and not ln.startswith("#")]
 
-    return comps_arg
+    return entries
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("raw_dir", help="directory of raw FITS frames for one night")
-    ap.add_argument("--out", default=None,
-                     help="output dir (default: ~/flores/reduced/<basename of raw_dir>)")
+    ap.add_argument("raw_dir", nargs="?", default="raw",
+                     help="directory of raw FITS frames for one night "
+                          "(default: ./raw - see module docstring for the "
+                          "assumed night-directory layout)")
+    ap.add_argument("--out", default="reduced",
+                     help="output dir (default: ./reduced, independent of "
+                          "raw_dir - both raw/ and coadded/ passes normally "
+                          "write into the same reduced/)")
+    ap.add_argument("--sets-dir", default="sets",
+                     help="directory holding this night's manifests - comp/darks/ "
+                          "standards (default: ./sets). Used only to locate the "
+                          "default --comps/--darks manifest when those aren't "
+                          "given explicitly")
     ap.add_argument("--seed", default=os.path.join(
         os.path.dirname(__file__), "seeds", "flores_seed_linelist.csv"))
     ap.add_argument("--thar-atlas", default=os.path.join(
         os.path.dirname(__file__), "thar_lovis_pepe_clean.csv"))
     ap.add_argument("--comps", nargs="+", default=None,
                      help="explicit comp frame filename(s), OR a single manifest "
-                          "file listing one filename per line (e.g. the `comp` "
-                          "file convention some nights use), overriding "
+                          "file listing one filename per line, overriding "
                           "header-based classification (recommended - see module "
-                          "docstring)")
+                          "docstring). Default: <sets-dir>/comp if that file "
+                          "exists, else header-based classification")
+    ap.add_argument("--darks", nargs="+", default=None,
+                     help="explicit raw dark frame filename(s), OR a single "
+                          "manifest file listing one filename per line, "
+                          "overriding header-based classification for nights "
+                          "where darks aren't tagged correctly (same convention "
+                          "as --comps). Default: <sets-dir>/darks if that file "
+                          "exists, else header-based classification")
     ap.add_argument("--comp-dir", default=None,
-                     help="directory --comps entries/manifest are resolved "
-                          "relative to (default: raw_dir). Set this when raw_dir "
-                          "holds coadded frames (see coadd_sets.py) that don't "
-                          "have their own comps/darks - point it at the original "
-                          "night directory instead, e.g. "
-                          "--comp-dir ../20260823 --comps comp")
+                     help="directory --comps/--darks entries/manifests are "
+                          "resolved relative to (default: raw_dir). Set this "
+                          "when raw_dir holds coadded frames (see coadd_sets.py) "
+                          "that don't have their own comps/darks - point it at "
+                          "raw/ instead, e.g. "
+                          "reduce_flores.py coadded --comp-dir raw")
     ap.add_argument("--max-comp-gap-min", type=float, default=None,
                      help="hard cutoff on comp-to-science time gap; default is "
                           "unlimited (comps are session-level anchors)")
@@ -370,10 +413,17 @@ def main():
 
     raw_dir = os.path.normpath(args.raw_dir)
     comp_dir = os.path.normpath(args.comp_dir) if args.comp_dir else raw_dir
-    out_dir = args.out or os.path.join(
-        os.path.expanduser("~/flores/reduced"), os.path.basename(raw_dir)
-    )
+    out_dir = os.path.normpath(args.out)
     os.makedirs(out_dir, exist_ok=True)
+
+    if args.comps is None:
+        default_comps = os.path.join(args.sets_dir, "comp")
+        if os.path.isfile(default_comps):
+            args.comps = [default_comps]
+    if args.darks is None:
+        default_darks = os.path.join(args.sets_dir, "darks")
+        if os.path.isfile(default_darks):
+            args.darks = [default_darks]
 
     seed_px, seed_wl, _ = wavecal.load_seed_linelist(args.seed)
     thar_wl, thar_intensity = wavecal.load_thar_atlas(args.thar_atlas)
@@ -391,7 +441,7 @@ def main():
 
     science_frames = [f for f in all_frames if f.role == "science"]
     if args.comps:
-        comp_entries = _expand_comps_arg(args.comps, comp_dir)
+        comp_entries = _expand_manifest_arg(args.comps, comp_dir)
         comp_frames = []
         for c in comp_entries:
             c_path = c if os.path.isabs(c) else os.path.join(comp_dir, c)
@@ -408,6 +458,18 @@ def main():
         # additive, not a replacement
         mdark_frames = mdark_frames + [f for f in comp_dir_frames if f.role == "mdark"]
         dark_frames = dark_frames + [f for f in comp_dir_frames if f.role == "dark"]
+    if args.darks:
+        # explicit manifest overrides header-based dark classification
+        # entirely (same convention as --comps), for nights where raw darks
+        # aren't tagged correctly - already-combined master darks (mdark,
+        # unambiguous by construction) are left as header-classified
+        dark_entries = _expand_manifest_arg(args.darks, comp_dir)
+        dark_frames = []
+        for d in dark_entries:
+            d_path = d if os.path.isabs(d) else os.path.join(comp_dir, d)
+            dark_frames.append(by_path.get(d_path, frames.classify(d_path)))
+        science_frames = [f for f in science_frames if f.path not in
+                           {d.path for d in dark_frames}]
 
     print(f"{len(science_frames)} science, {len(comp_frames)} comp, "
           f"{len(mdark_frames)} master dark, {len(dark_frames)} raw dark "
