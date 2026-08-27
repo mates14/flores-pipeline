@@ -15,10 +15,13 @@ everything else, including hd199478 (a real target, not a calibrator -
 it's a known variable supergiant, not a flux standard, see fluxcal.py).
 
 Each standard's .dat stem (e.g. "etauma_6x5s") is expected to match a FITS
-file of the same name in --coadd-dir (default: <reduced_dir>/..), which is
-where coadd_sets.py's coadd_light.py-produced frames carry their EXPTIME -
-needed to convert the reduced (total-counts) spectrum to a count rate
-before dividing by the reference flux.
+file of the same name, which is where coadd_sets.py's coadd_light.py-
+produced frames carry their EXPTIME - needed to convert the reduced
+(total-counts) spectrum to a count rate before dividing by the reference
+flux. If --coadd-dir is given, only that directory is searched; otherwise
+<reduced_dir> itself is tried first (for setups that keep the coadds next
+to the .dat outputs), then <reduced_dir>/.. (the historical default, for
+setups where <reduced_dir> is a "reduced" subdirectory of the coadd dir).
 """
 import argparse
 import glob
@@ -43,8 +46,13 @@ def load_reduced(path):
     return d[:, 0], d[:, 1], d[:, 2]
 
 
-def find_source_fits(dat_path, coadd_dir):
-    """etauma_6x5s_fiber-untilted.dat -> <coadd_dir>/etauma_6x5s.fits"""
+def find_source_fits(dat_path, search_dirs):
+    """etauma_6x5s_fiber-untilted.dat -> <search_dirs[i]>/etauma_6x5s.fits
+
+    Returns the first candidate that actually exists, or - if none do -
+    the candidate in the first search dir (so callers have a sensible path
+    to report as "not found").
+    """
     stem = os.path.basename(dat_path)
     for tag_suffix in ("_fiber-tilted", "_fiber-untilted", "_fiber-tilted2",
                        "_fiber-untilted2"):
@@ -53,7 +61,11 @@ def find_source_fits(dat_path, coadd_dir):
             stem = stem[:idx]
             break
     stem = stem[:-4] if stem.endswith(".dat") else stem
-    return os.path.join(coadd_dir, stem + ".fits")
+    candidates = [os.path.join(d, stem + ".fits") for d in search_dirs]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return candidates[0]
 
 
 def target_name(dat_path):
@@ -70,11 +82,15 @@ def main():
                      help="output dir (default: <reduced_dir>/fluxcal)")
     ap.add_argument("--coadd-dir", default=None,
                      help="directory holding the coadded FITS files whose EXPTIME "
-                          "headers are needed (default: <reduced_dir>/..)")
+                          "headers are needed (default: try <reduced_dir> itself, "
+                          "then <reduced_dir>/..)")
     args = ap.parse_args()
 
     reduced_dir = os.path.normpath(args.reduced_dir)
-    coadd_dir = args.coadd_dir or os.path.join(reduced_dir, "..")
+    if args.coadd_dir:
+        search_dirs = [args.coadd_dir]
+    else:
+        search_dirs = [reduced_dir, os.path.join(reduced_dir, "..")]
     out_dir = args.out or os.path.join(reduced_dir, "fluxcal")
     os.makedirs(out_dir, exist_ok=True)
 
@@ -94,7 +110,7 @@ def main():
                   file=sys.stderr)
             continue
         dat_path = dat_candidates[0]
-        source_fits = find_source_fits(dat_path, coadd_dir)
+        source_fits = find_source_fits(dat_path, search_dirs)
         if not os.path.isfile(source_fits):
             print(f"SKIP standard {name}: source FITS not found ({source_fits})",
                   file=sys.stderr)
@@ -123,7 +139,7 @@ def main():
     n_ok, n_skip = 0, 0
     for dat_path in dat_paths:
         name = target_name(dat_path)
-        source_fits = find_source_fits(dat_path, coadd_dir)
+        source_fits = find_source_fits(dat_path, search_dirs)
         if not os.path.isfile(source_fits):
             print(f"SKIP {dat_path}: source FITS not found ({source_fits})",
                   file=sys.stderr)
