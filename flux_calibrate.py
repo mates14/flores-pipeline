@@ -10,10 +10,10 @@ docstring for the assumed layout):
 
     cd 20260823 && python3 /path/to/flux_calibrate.py
 
-which reads reduced/*.dat + coadded/*.fits + sets/standards, and writes
-fluxcal/. All are overridable and independent:
+which reads reduced/*.dat + coadded/*.fits + raw/*.fits + sets/standards, and
+writes fluxcal/. All are overridable and independent:
 
-    python3 flux_calibrate.py <reduced_dir> [--out <dir>] [--coadd-dir <dir>] [--standards <file>]
+    python3 flux_calibrate.py <reduced_dir> [--out <dir>] [--coadd-dir <dir>] [--raw-dir <dir>] [--standards <file>]
 
 Which of this night's reduced spectra *are* a flux standard - and which
 known standard each one is - is declared explicitly in sets/standards
@@ -31,11 +31,14 @@ a consistency check) and everything else, including a real target that
 happens to share a name pattern with a standard (nothing here is inferred
 from naming beyond what sets/standards says).
 
-Each standard's .dat stem (e.g. "etauma_6x5s") is expected to match a FITS
-file of the same name in <coadd_dir> - that's where coadd_sets.py's
-coadd_light.py-produced frames carry their EXPTIME, needed to convert the
-reduced (total-counts) spectrum to a count rate before dividing by the
-reference flux.
+Each .dat stem (e.g. "etauma_6x5s") is expected to match a FITS file of the
+same name in <coadd_dir> or <raw_dir> - that's where its EXPTIME header
+lives, needed to convert the reduced (total-counts) spectrum to a count
+rate before dividing by the reference flux. A coadded target's FITS lives
+in <coadd_dir> (coadd_sets.py/coadd_light.py's output, DARKSUB=T); a target
+reduced directly from a raw frame (reduce_flores.py's `raw` pass) has no
+coadded product at all, so its FITS is looked up in <raw_dir> instead -
+both directories are searched, coadd_dir first.
 """
 import argparse
 import glob
@@ -94,8 +97,15 @@ def load_reduced(path):
     return d[:, 0], d[:, 1], d[:, 2]
 
 
-def find_source_fits(dat_path, coadd_dir):
-    """etauma_6x5s_fiber-untilted.dat -> <coadd_dir>/etauma_6x5s.fits"""
+def find_source_fits(dat_path, coadd_dir, raw_dir):
+    """
+    etauma_6x5s_fiber-untilted.dat -> <coadd_dir>/etauma_6x5s.fits, or
+    <raw_dir>/etauma_6x5s.fits if it's not a coadded target (a target
+    reduced directly from a raw frame has its stem equal to that raw
+    frame's own stem, and no coadded product exists for it at all).
+    coadd_dir is tried first since a coadded target's raw sub-exposures
+    would otherwise falsely resolve to one of their own raw frames.
+    """
     stem = os.path.basename(dat_path)
     for tag_suffix in ("_fiber-tilted", "_fiber-untilted", "_fiber-tilted2",
                        "_fiber-untilted2"):
@@ -104,7 +114,13 @@ def find_source_fits(dat_path, coadd_dir):
             stem = stem[:idx]
             break
     stem = stem[:-4] if stem.endswith(".dat") else stem
-    return os.path.join(coadd_dir, stem + ".fits")
+    coadd_path = os.path.join(coadd_dir, stem + ".fits")
+    if os.path.isfile(coadd_path):
+        return coadd_path
+    raw_path = os.path.join(raw_dir, stem + ".fits")
+    if os.path.isfile(raw_path):
+        return raw_path
+    return coadd_path
 
 
 def target_name(dat_path):
@@ -123,6 +139,11 @@ def main():
     ap.add_argument("--coadd-dir", default="coadded",
                      help="directory holding the coadded FITS files whose EXPTIME "
                           "headers are needed (default: ./coadded)")
+    ap.add_argument("--raw-dir", default="raw",
+                     help="directory holding raw FITS files, searched for a "
+                          "target's source FITS (EXPTIME) when it isn't a coadded "
+                          "product - i.e. a target reduced directly by "
+                          "reduce_flores.py's `raw` pass (default: ./raw)")
     ap.add_argument("--standards", default="sets/standards",
                      help="manifest mapping observed target name -> standard key "
                           "(default: ./sets/standards) - see module docstring; "
@@ -131,6 +152,7 @@ def main():
 
     reduced_dir = os.path.normpath(args.reduced_dir)
     coadd_dir = os.path.normpath(args.coadd_dir)
+    raw_dir = os.path.normpath(args.raw_dir)
     out_dir = os.path.normpath(args.out)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -167,10 +189,10 @@ def main():
                   f"{reduced_dir}", file=sys.stderr)
             continue
         dat_path = dat_candidates[0]
-        source_fits = find_source_fits(dat_path, coadd_dir)
+        source_fits = find_source_fits(dat_path, coadd_dir, raw_dir)
         if not os.path.isfile(source_fits):
-            print(f"SKIP standard {target} ({key}): source FITS not found "
-                  f"({source_fits})", file=sys.stderr)
+            print(f"SKIP standard {target} ({key}): source FITS not found in "
+                  f"{coadd_dir} or {raw_dir} ({source_fits})", file=sys.stderr)
             continue
         exptime = float(fits.getheader(source_fits)["EXPTIME"])
 
@@ -197,10 +219,10 @@ def main():
     n_ok, n_skip = 0, 0
     for dat_path in dat_paths:
         name = target_name(dat_path)
-        source_fits = find_source_fits(dat_path, coadd_dir)
+        source_fits = find_source_fits(dat_path, coadd_dir, raw_dir)
         if not os.path.isfile(source_fits):
-            print(f"SKIP {dat_path}: source FITS not found ({source_fits})",
-                  file=sys.stderr)
+            print(f"SKIP {dat_path}: source FITS not found in {coadd_dir} or "
+                  f"{raw_dir} ({source_fits})", file=sys.stderr)
             n_skip += 1
             continue
         exptime = float(fits.getheader(source_fits)["EXPTIME"])

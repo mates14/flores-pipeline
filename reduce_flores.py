@@ -19,11 +19,17 @@ in a fixed subdirectory of it, so `cd` there and just run:
     |-- reduced/             <- this script's output
     `-- fluxcal/             flux_calibrate.py output
 
-With no arguments this reads raw/ and writes reduced/. Both are still
-overridable and independent, e.g. to reduce an already-coadded set of
-frames (which don't carry their own comps/darks):
+With no arguments this reads raw/ and writes reduced/ - and, if ./coadded
+exists (coadd_sets.py has been run), its frames are automatically pulled
+in too as additional science input, calibrated against the same raw/
+comps/darks (a coadded product carries no comp/dark of its own - see
+coadd_light.py). This is what makes coadded targets "just show up" without
+symlinking them into raw/ (which would make them indistinguishable from a
+raw frame, e.g. eligible for dark-subtraction they've already had - see
+DARKSUB handling below) or hunting down --comp-dir. Point --coadd-dir
+elsewhere, or pass '' to skip it, for a raw_dir that doesn't follow this
+layout:
 
-    python3 reduce_flores.py coadded --comp-dir raw
     python3 reduce_flores.py <raw_dir> [--out <out_dir>] [--seed seeds/flores_seed_linelist.csv]
     python3 reduce_flores.py <raw_dir> --comps comp1.fits comp2.fits   # legacy/un-migrated nights
 
@@ -395,6 +401,14 @@ def main():
                           "that don't have their own comps/darks - point it at "
                           "raw/ instead, e.g. "
                           "reduce_flores.py coadded --comp-dir raw")
+    ap.add_argument("--coadd-dir", default="coadded",
+                     help="directory of coadd_sets.py output, automatically "
+                          "merged in as additional science input alongside "
+                          "raw_dir when it exists (default: ./coadded; pass '' "
+                          "to skip). Never a source of comp/dark frames - those "
+                          "still come only from raw_dir/--comp-dir, since a "
+                          "coadded product carries none of its own. Ignored if "
+                          "it resolves to the same directory as raw_dir")
     ap.add_argument("--max-comp-gap-min", type=float, default=None,
                      help="hard cutoff on comp-to-science time gap; default is "
                           "unlimited (comps are session-level anchors)")
@@ -440,6 +454,16 @@ def main():
         comp_dir_frames = all_frames
 
     science_frames = [f for f in all_frames if f.role == "science"]
+
+    coadd_dir = os.path.normpath(args.coadd_dir) if args.coadd_dir else None
+    if coadd_dir and coadd_dir != raw_dir and os.path.isdir(coadd_dir):
+        coadd_paths = sorted(glob.glob(os.path.join(coadd_dir, "*.fits")))
+        coadd_science = [f for f in frames.classify_all(coadd_paths) if f.role == "science"]
+        by_path.update({f.path: f for f in coadd_science})
+        science_frames = science_frames + coadd_science
+        print(f"{len(coadd_science)} additional science frames found in {coadd_dir}",
+              file=sys.stderr)
+
     if args.comps:
         comp_entries = _expand_manifest_arg(args.comps, comp_dir)
         comp_frames = []

@@ -101,13 +101,19 @@ default is relative to the current directory per the layout above:
 ```
 cd 20260823
 python3 /path/to/coadd_sets.py                       # sets/ + raw/ -> coadded/
-python3 /path/to/reduce_flores.py coadded --comp-dir raw   # -> reduced/
-python3 /path/to/reduce_flores.py raw                      # non-coadded targets, same reduced/
-python3 /path/to/flux_calibrate.py                    # reduced/ + coadded/ + sets/standards -> fluxcal/
+python3 /path/to/reduce_flores.py                     # raw/ (+ coadded/ if present) -> reduced/
+python3 /path/to/flux_calibrate.py                    # reduced/ + coadded/ + raw/ + sets/standards -> fluxcal/
 ```
 
+`reduce_flores.py` reads comps/darks only from `raw/` but automatically
+pulls in `coadded/`'s frames as additional science input if that directory
+exists - a coadded product carries no comp/dark of its own (see
+`coadd_light.py`), so there's no need to symlink it into `raw/` (which
+would make it indistinguishable from a raw frame - e.g. eligible for
+dark-subtraction it's already had) or pass `--comp-dir` by hand.
+
 Every path is still overridable and independent of the others (`--out`,
-`--sets`, `--comp-dir`, `--coadd-dir`, `--standards`, ...) for nights that
+`--sets`, `--comp-dir`, `--coadd-dir`, `--raw-dir`, `--standards`, ...) for nights that
 don't follow this layout, or a raw location that lives elsewhere (e.g.
 `/images/2026/20260823` on an imaging server) - see each script's `-h`.
 
